@@ -10,6 +10,7 @@ import UIKit
 import AVFoundation
 
 public struct CameraView: View {
+    
     private var delegate: CameraViewDelegate?
     private var cameraType: AVCaptureDevice.DeviceType
     private var cameraPosition: AVCaptureDevice.Position
@@ -29,7 +30,9 @@ public struct CameraView: View {
     }
     
     public var body: some View {
-        preview
+        preview.onTapGesture {
+            viewModel.capturePhoto()
+        }
     }
     
     public func getViewModel() -> CameraViewModel {
@@ -58,15 +61,14 @@ enum PhotoParseError : Error {
     case takeRetainValueFailed
 }
 
-private class PreviewView: UIView, AVCapturePhotoCaptureDelegate {
-    
-    @EnvironmentObject var cameraState : CameraState
-    
+private class PreviewView: UIView, AVCapturePhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
+        
     private var delegate: CameraViewDelegate?
     
     private var captureSession: AVCaptureSession?
     private var videoDeviceInput: AVCaptureDeviceInput?
     private var photoOutput: AVCapturePhotoOutput?
+    private var videoOutput: AVCaptureVideoDataOutput?
     private var onFrameCaptured: ((UIImage) -> Void)?
     
     var videoPreviewLayer: AVCaptureVideoPreviewLayer {
@@ -97,6 +99,11 @@ private class PreviewView: UIView, AVCapturePhotoCaptureDelegate {
             return
         }
         
+        setupSession(cameraType: cameraType, cameraPosition: cameraPosition)
+        
+    }
+    
+    func setupSession(cameraType: AVCaptureDevice.DeviceType = .builtInWideAngleCamera, cameraPosition: AVCaptureDevice.Position = .back) {
         let session = AVCaptureSession()
         session.beginConfiguration()
         let videoDevice = AVCaptureDevice.default(cameraType,
@@ -110,21 +117,37 @@ private class PreviewView: UIView, AVCapturePhotoCaptureDelegate {
         session.addInput(videoDeviceInput!)
         
         self.photoOutput = AVCapturePhotoOutput()
-        photoOutput!.isLivePhotoCaptureEnabled = photoOutput!.isLivePhotoCaptureSupported
+        
+        videoOutput = AVCaptureVideoDataOutput()
+        let queue = DispatchQueue(label: "videoOutputQueue")
+        videoOutput!.setSampleBufferDelegate(self, queue: queue)
         
         guard session.canAddOutput(photoOutput!) else {
             delegate?.noCameraDetected()
             return
             
         }
-        session.sessionPreset = .photo
+        session.automaticallyConfiguresCaptureDeviceForWideColor = false
         session.addOutput(photoOutput!)
+        
+        guard session.canAddOutput(videoOutput!) else {
+            delegate?.noCameraDetected()
+            return
+            
+        }
+
+        session.addOutput(videoOutput!)
+        
+        videoOutput!.alwaysDiscardsLateVideoFrames = true
         
         session.commitConfiguration()
         
         self.captureSession = session
         delegate?.cameraSessionStarted()
-        self.captureSession?.startRunning()
+        
+        DispatchQueue.global(qos: .background).async {
+            self.captureSession?.startRunning()
+        }
     }
     
     override class var layerClass: AnyClass {
@@ -140,32 +163,31 @@ private class PreviewView: UIView, AVCapturePhotoCaptureDelegate {
         }
     }
     
-    func capturePhoto() {
-        let photoSettings: AVCapturePhotoSettings
-        if photoOutput!.availablePhotoCodecTypes.contains(.hevc) {
-            photoSettings = AVCapturePhotoSettings(format:
-                [AVVideoCodecKey: AVVideoCodecType.hevc])
-        } else {
-            photoSettings = AVCapturePhotoSettings()
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        //guard let uiImage = sampleBuffer.imageWithCGImage() else { return }
+        DispatchQueue.global(qos: .background).async {
+            //self.onFrameCaptured?(uiImage)
         }
-        photoSettings.flashMode = .auto
+    }
+    
+    func capturePhoto() {
+        let photoSettings = AVCapturePhotoSettings()
+        photoSettings.previewPhotoFormat = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
         self.photoOutput?.capturePhoto(with: photoSettings, delegate: self)
     }
     
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        if error != nil {
-            cameraState.capturedImageError = PhotoParseError.error(error!)
-            return
-        }
+        print("taking photo")
         
-        if let cgImage = photo.previewCGImageRepresentation() {
-            let orientation = photo.metadata[kCGImagePropertyOrientation as String] as! NSNumber
-            let uiOrientation = UIImage.Orientation(rawValue: orientation.intValue)!
-            let image = UIImage(cgImage: cgImage, scale: 1, orientation: uiOrientation)
-            cameraState.capturedImage = image
-            onFrameCaptured?(image)
-        }else {
-            cameraState.capturedImageError = PhotoParseError.takeRetainValueFailed
+        DispatchQueue.global(qos: .background).async {
+            if let cgImage = photo.cgImageRepresentation() {
+                let image = UIImage(cgImage: cgImage)
+                self.onFrameCaptured?(image)
+                
+                self.setupSession()
+            } else {
+                print("Error: \(error?.localizedDescription ?? "No error") ")
+            }
         }
     }
     
@@ -198,7 +220,7 @@ private struct PreviewHolder: UIViewRepresentable {
     }
     
     func getView() -> PreviewView {
-        return self.view
+        return view
     }
     
     typealias UIViewType = PreviewView
@@ -208,4 +230,34 @@ public struct CameraView_Previews: PreviewProvider {
     public static var previews: some View {
         CameraView()
     }
+}
+
+extension CMSampleBuffer {
+    /// https://stackoverflow.com/questions/15726761/make-an-uiimage-from-a-cmsamplebuffer
+    func image(orientation: UIImage.Orientation = .up, scale: CGFloat = 1.0) -> UIImage? {
+        if let buffer = CMSampleBufferGetImageBuffer(self) {
+            let ciImage = CIImage(cvPixelBuffer: buffer)
+
+            return UIImage(ciImage: ciImage, scale: scale, orientation: orientation)
+        }
+
+        return nil
+    }
+
+    func imageWithCGImage(orientation: UIImage.Orientation = .up, scale: CGFloat = 1.0) -> UIImage? {
+        if let buffer = CMSampleBufferGetImageBuffer(self) {
+            let ciImage = CIImage(cvPixelBuffer: buffer)
+
+            let context = CIContext(options: nil)
+
+            guard let cg = context.createCGImage(ciImage, from: ciImage.extent) else {
+                return nil
+            }
+            
+            return UIImage(cgImage: cg, scale: scale, orientation: orientation)
+        }
+
+        return nil
+    }
+    
 }

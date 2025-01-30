@@ -14,8 +14,8 @@ import MLKitImageLabelingCommon
 import UIKit
 
 class MLKitManager: ObservableObject {
-    @Published var imageLabel: String = ""
-    @Published var visibleText: String = ""
+    @Published var imageLabel: String = "Placeholder 1"
+    @Published var visibleText: String = "Placeholder 2"
 
     private let textRecognizer: TextRecognizer
     private let imageLabeler: ImageLabeler
@@ -30,9 +30,14 @@ class MLKitManager: ObservableObject {
 
     func recognizeText(from image: UIImage) {
         let visionImage = VisionImage(image: image)
+        
+        visionImage.orientation = .leftMirrored
 
         textRecognizer.process(visionImage) { [weak self] result, error in
+            
             guard error == nil, let result = result else { return }
+            
+            print("recognized text: \(result.text)")
 
             DispatchQueue.main.async {
                 self?.visibleText = result.text

@@ -7,18 +7,22 @@
 
 import SwiftUI
 import SwiftData
+import Vision
 
 struct ContentView: View {
         
-    @State private var mlKitManager = MLKitManager()
+    @ObservedObject private var mlKitManager = MLKitManager()
+    @ObservedObject private var visionKit = VisionKit()
 
     var body: some View {
         VStack {
-            Text(mlKitManager.visibleText)
-            Text(mlKitManager.imageLabel)
+            Text("ML Kit Text: \n \(mlKitManager.visibleText)")
+            Text("Vision Kit Text: \(visionKit.visibleText)")
+            //Text(mlKitManager.imageLabel)
             CameraView(onFrameCaptured: { image in
                 mlKitManager.recognizeText(from: image)
-                mlKitManager.labelImage(from: image)
+                visionKit.recognizeText(in: image)
+                //mlKitManager.labelImage(from: image)
             })
         }
     }
